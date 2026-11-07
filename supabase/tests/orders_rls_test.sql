@@ -5,7 +5,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path = extensions, public;
 
-select plan(22);
+select plan(24);
 
 -- Layer 3 (catalog): every table in `app` has RLS on, including tables added
 -- after this test was written.
@@ -24,7 +24,7 @@ select is_empty(
   $$ select r.rolname || ' on ' || c.relname
      from pg_class c
      cross join (values ('anon'), ('authenticated')) as r (rolname)
-     where c.relnamespace = 'app'::regnamespace and c.relkind in ('r', 'v', 'm')
+     where c.relnamespace = 'app'::regnamespace and c.relkind in ('r', 'p', 'v', 'm', 'f')
        and has_table_privilege(r.rolname, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') $$,
   'anon and authenticated hold no privilege on any table in schema app'
 );
@@ -97,6 +97,12 @@ select throws_ok(
 select is(
   (select status from app.orders where description = repeat('a', 10)),
   'open', 'a new order starts open');
+select throws_ok(
+  $$ update app.accounts set display_name = '   ' where id = '11111111-1111-4111-8111-111111111111' $$,
+  '23514', null, 'a whitespace-only display name is rejected');
+select throws_ok(
+  $$ delete from app.accounts where id = '11111111-1111-4111-8111-111111111111' $$,
+  '23503', null, 'an account with orders cannot be deleted out from under them');
 
 select * from finish();
 rollback;

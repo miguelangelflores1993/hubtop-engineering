@@ -25,14 +25,19 @@ create table app.categories (
 -- A professional has one category in this slice; a client has none.
 create table app.accounts (
   id uuid primary key references auth.users (id) on delete cascade,
-  display_name text not null check (length(display_name) between 1 and 80),
+  display_name text not null check (
+    length(display_name) <= 80
+    and length(regexp_replace(display_name, '^\s+|\s+$', '', 'g')) >= 1
+  ),
   professional_category text references app.categories (slug),
   created_at timestamptz not null default now()
 );
 
 create table app.orders (
   id uuid primary key default gen_random_uuid(),
-  client_id uuid not null references app.accounts (id) on delete cascade,
+  -- restrict, not cascade: deleting a person must not silently erase orders
+  -- that professionals already saw; closing them is an explicit flow
+  client_id uuid not null references app.accounts (id) on delete restrict,
   category text not null references app.categories (slug),
   -- FR-005 is checked in the app for a fast message; the database enforces it anyway.
   -- The cap is on what is stored; the minimum ignores any whitespace (spaces,
@@ -47,10 +52,12 @@ create table app.orders (
 );
 
 -- FR-003: the feed reads open orders of one category, newest first.
--- A partial index keeps it small: closed orders never enter it.
-create index orders_feed_idx on app.orders (category, created_at desc) where status = 'open';
+-- A partial index keeps it small: closed orders never enter it. `id` breaks
+-- ties between orders created in the same instant, so the order is stable
+-- and cursor pagination never skips or repeats a row.
+create index orders_feed_idx on app.orders (category, created_at desc, id desc) where status = 'open';
 -- "My orders" for the client.
-create index orders_client_idx on app.orders (client_id, created_at desc);
+create index orders_client_idx on app.orders (client_id, created_at desc, id desc);
 
 alter table app.categories enable row level security;
 alter table app.accounts enable row level security;
