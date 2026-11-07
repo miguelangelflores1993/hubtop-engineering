@@ -262,7 +262,7 @@ tested. Open the repo in Claude Code and it is active.
 | [`tools/gates.paths`](tools/gates.paths) | Files an agent can never merge: changes to the guardrails go to a person |
 | [`specs/001-client-creates-order`](specs/001-client-creates-order/spec.md) | Example spec, and the first one HubTop Lite will implement |
 
-Tests: `.claude/hooks/tests/hooks-test.sh` (30 cases) and
+Tests: `.claude/hooks/tests/hooks-test.sh` (34 cases) and
 `tools/tests/receipts-test.sh` (18 cases).
 
 ## Repository rules
