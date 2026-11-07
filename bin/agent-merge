@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# The only way an agent merges a pull request (AGENTS.md "Delivery pipeline"),
+# and therefore the only way code reaches main. In order, it refuses:
+#   1. a diff over the size caps (bin/change-size);
+#   2. a diff that touches the gates themselves (tools/gates.paths): a person
+#      merges those from the GitHub web UI, so an agent can't loosen its own
+#      guardrails;
+#   3. code without both review receipts (bin/agent-review check);
+#   4. a head that doesn't contain the current base;
+#   5. any CI check on the exact head that isn't finished and green.
+# Then it posts the verdict as a comment, publishes an `agent-review` status
+# and squash-merges the reviewed head (pinned by sha, so a push in between
+# fails the merge instead of merging unreviewed code). It never waits: if CI is
+# still running it refuses and says so.
+#   bin/agent-merge <pr-number>
+set -euo pipefail
+
+pr=${1:?usage: bin/agent-merge <pr-number>}
+root=$(git rev-parse --show-toplevel)
+repo=${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
+refuse() {
+  echo "✗ agent-merge: #$pr: $1" >&2
+  shift
+  for line in "$@"; do echo "  $line" >&2; done
+  exit 1
+}
+
+read -r head base draft < <(gh api "repos/$repo/pulls/$pr" -q '"\(.head.sha) \(.base.ref) \(.draft)"')
+git fetch -q origin "$base" "pull/$pr/head"
+
+# 1. size
+size=$("$root/bin/change-size" --base "origin/$base" --head "$head") \
+  || refuse 'over the size caps' "$size"
+
+# 2. gates. The list is read from the base branch: a branch can't shorten the
+# list it is judged by. Only while the base has no list is the working tree's used.
+gates=$(git show "origin/$base:tools/gates.paths" 2>/dev/null || cat "$root/tools/gates.paths")
+hit=
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  while IFS= read -r entry; do
+    case $entry in '' | '#'*) continue ;; esac
+    if [ "$file" = "$entry" ] || { [[ $entry == */ ]] && [[ $file == "$entry"* ]]; }; then
+      hit="$hit    $file"$'\n'
+      break
+    fi
+  done <<<"$gates"
+done < <(git diff --name-only --no-renames "origin/$base...$head")
+[ -z "$hit" ] || refuse "touches the gates (tools/gates.paths):"$'\n'"${hit%$'\n'}" \
+  'a person reviews and merges this one from the GitHub web UI'
+
+# 3. review receipts (prints both verdicts; empty when the diff has no code)
+verdict=$("$root/bin/agent-review" check --base "origin/$base" --head "$head") || exit 1
+
+# 4. the head must contain the current base, or green CI proves nothing about the merge
+git merge-base --is-ancestor "origin/$base" "$head" \
+  || refuse "the head (${head:0:10}) doesn't contain the current origin/$base" \
+    "rebase on $base and push; the receipts survive a rebase if the diff doesn't change"
+
+# 5. CI on the exact head
+checks=$(gh api --paginate "repos/$repo/commits/$head/check-runs" \
+  -q '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion // "-")\t\(.html_url)"') \
+  || refuse "couldn't read the checks of ${head:0:10}" 'retry in a moment'
+if [ -z "$checks" ]; then
+  if git ls-tree -r --name-only "$head" -- .github/workflows | grep -q .; then
+    refuse "no CI checks on ${head:0:10} yet" 'wait for CI to start and finish, then run this again'
+  fi
+  ci_note='No CI workflows in this repository yet.'
+else
+  pending=$(awk -F'\t' '$2 != "completed" { print "    " $1 " (" $2 ")" }' <<<"$checks")
+  [ -z "$pending" ] || refuse "CI is still running on ${head:0:10}:"$'\n'"$pending" \
+    "wait for it (gh pr checks $pr --watch) and run this again"
+  red=$(awk -F'\t' '$3 !~ /^(success|skipped|neutral)$/ { print "    " $1 ": " $3 " " $4 }' <<<"$checks")
+  [ -z "$red" ] || refuse "CI is not green on ${head:0:10}:"$'\n'"$red" 'fix it and push'
+  ci_note="CI green on ${head:0:10}: $(awk -F'\t' '{ print $1 }' <<<"$checks" | paste -sd, - | sed 's/,/, /g')."
+fi
+
+if [ "$draft" = true ]; then
+  gh pr ready "$pr" >/dev/null
+fi
+if [ -n "$verdict" ]; then
+  body="Review receipts for ${head:0:10}:
+
+$verdict
+
+$ci_note"
+  desc='verifier + /code-review approved'
+else
+  body="No code under apps/, packages/ or supabase/: no review receipts needed.
+
+$ci_note"
+  desc='no code: receipts not needed'
+fi
+gh api -X POST "repos/$repo/statuses/$head" -f state=success -f context=agent-review -f description="$desc" >/dev/null \
+  || echo "⚠ agent-merge: couldn't publish the agent-review status on ${head:0:10}; the verdict is in the comment" >&2
+gh api -X POST "repos/$repo/issues/$pr/comments" -f body="$body" >/dev/null
+gh api -X PUT "repos/$repo/pulls/$pr/merge" -f merge_method=squash -f sha="$head" >/dev/null
+echo "✓ agent-merge: #$pr merged (squash of ${head:0:10})"
