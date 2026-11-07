@@ -1,0 +1,1 @@
+^(supabase/migrations/|supabase/schemas/.*(rls|grants|functions).*\.sql$|apps/api/internal/(auth|orders)/|packages/app-core/lib/src/(auth|session)/)

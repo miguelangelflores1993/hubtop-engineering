@@ -234,14 +234,36 @@ modular monolith**. The boundaries were right; these were not:
 
 | Phase | What lands here | Status |
 |---|---|---|
-| 1 | This case study | In progress |
-| 2 | A trimmed, reviewed copy of the agent tooling: `CLAUDE.md`, `sidekick` and `verifier` agents, the close-gate, secret-scan and receipt-guard hooks, a simplified `agent-merge`, an example spec | Planned |
+| 1 | This case study | Done, demo GIF pending |
+| 2 | The agent pipeline, rebuilt generic and tested (see below) | Done |
 | 4 | Public CI: Flutter analyze and tests, Go tests, migration checks, badges | Planned |
 | 3 | **HubTop Lite**: one end-to-end flow rebuilt from scratch (client creates an order → Go API stores it with identity from the JWT → professional sees it), with Supabase migrations, RLS tests and fake seed data | Planned |
 | 5 | A 2–3 minute demo video, and optionally a Flutter web build on fake data | Planned |
 
 Phases 3–5 are delivered through the same agent pipeline described above, so
 the public pull requests show the whole path from spec to verifier to merge.
+
+### The agent pipeline in this repo
+
+A trimmed, generic version of the product's tooling, translated to English and
+tested. Open the repo in Claude Code and it is active.
+
+| File | What it does |
+|---|---|
+| [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md) | The rules and the delivery pipeline, and how the lead uses the agents |
+| [`.claude/agents/sidekick.md`](.claude/agents/sidekick.md) | Implements a slice from a complete brief; never touches git or codegen |
+| [`.claude/agents/verifier.md`](.claude/agents/verifier.md) | Clean-context review of the committed diff; on `APPROVED` saves the stage 1 receipt |
+| [`.claude/hooks/close-gate.sh`](.claude/hooks/close-gate.sh) | Stop hook: blocks the close on deleted or skipped tests, analyzer or `go vet` failures; asks once for the verifier on sensitive paths |
+| [`.claude/hooks/secret-output-scan.py`](.claude/hooks/secret-output-scan.py) | Redacts secrets from tool output (gitleaks plus built-in patterns) |
+| [`.claude/hooks/review-receipt-guard.py`](.claude/hooks/review-receipt-guard.py) | Only the verifier saves stage 1, only the lead saves stage 2, nobody writes receipts by hand |
+| [`bin/agent-review`](bin/agent-review) | Saves and checks the receipts, keyed by the diff's patch-id |
+| [`bin/change-size`](bin/change-size) | Size caps per pull request and the `/code-review` level the diff needs |
+| [`bin/agent-merge`](bin/agent-merge) | The only merge path: size, gates, both receipts, base contained, CI green, squash pinned to the reviewed sha |
+| [`tools/gates.paths`](tools/gates.paths) | Files an agent can never merge: changes to the guardrails go to a person |
+| [`specs/001-client-creates-order`](specs/001-client-creates-order/spec.md) | Example spec, and the first one HubTop Lite will implement |
+
+Tests: `.claude/hooks/tests/hooks-test.sh` (30 cases) and
+`tools/tests/receipts-test.sh` (18 cases).
 
 ## Repository rules
 

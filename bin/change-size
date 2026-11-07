@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# change-size: the single owner of "how big is this diff" (AGENTS.md "Size").
+# Measures what is committed in merge-base(BASE, HEAD)..HEAD, without
+# generated files or specs/, and classifies each file:
+#   - tests and docs only count toward the total;
+#   - everything else is production;
+#   - production in a sensitive path (tools/sensitive-paths.ere) also counts
+#     deleted lines, because removing a check is as risky as adding one.
+# The /code-review level looks only at production code under apps/, packages/
+# and supabase/: the code that needs review receipts (bin/agent-review).
+#   bin/change-size [--base REF] [--head REV]           caps; exit 1 if over
+#   bin/change-size [--base REF] [--head REV] --level   low | medium | high
+set -uo pipefail
+
+PROD_MAX=1000      # added production lines
+SENSITIVE_MAX=400  # added + deleted lines in sensitive paths
+TOTAL_MAX=3000     # added lines, tests and docs included
+MEDIUM_CODE=400    # production code from which /code-review asks for at least medium
+
+usage() { echo "usage: bin/change-size [--base REF] [--head REV] [--level]" >&2; exit 2; }
+base=origin/main
+head=HEAD
+level=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --base) [ $# -ge 2 ] || usage; base=$2; shift 2 ;;
+    --head) [ $# -ge 2 ] || usage; head=$2; shift 2 ;;
+    --level) level=1; shift ;;
+    *) usage ;;
+  esac
+done
+
+sensitive=$(cat "$(dirname "$0")/../tools/sensitive-paths.ere") \
+  || { echo '✗ change-size: tools/sensitive-paths.ere is missing' >&2; exit 2; }
+mb=$(git merge-base "$base" "$head" 2>/dev/null) \
+  || { echo "✗ change-size: can't find $base or its merge-base with $head" >&2; exit 2; }
+numstat=$(mktemp) || exit 2
+trap 'rm -f "$numstat"' EXIT
+# -z keeps paths verbatim; without it git quotes non-ASCII and anchored regexes miss
+git diff --numstat -z --no-renames "$mb" "$head" -- . \
+  ':!*.g.dart' ':!*.freezed.dart' ':!*.gen.go' ':!*.sql.go' ':!*openapi.json' \
+  ':!*.lock' ':!*.sum' ':!specs/**' >"$numstat" \
+  || { echo '✗ change-size: git diff failed' >&2; exit 2; }
+
+is_test='(^|/)(test|tests|testdata|integration_test|fixtures)/|_test\.(go|dart|py|sh|sql)$|\.feature$'
+is_docs='\.md$|^docs/'
+is_code='^(apps|packages|supabase)/'
+prod=0 code=0 sens=0 total=0
+while IFS=$'\t' read -r -d '' added deleted path; do
+  [ -n "$path" ] || continue
+  [ "$added" = - ] && added=0   # binary files
+  [ "$deleted" = - ] && deleted=0
+  total=$((total + added))
+  if [[ $path =~ $is_test ]] || [[ $path =~ $is_docs ]]; then continue; fi
+  prod=$((prod + added))
+  if [[ $path =~ $is_code ]]; then code=$((code + added)); fi
+  if [[ $path =~ $sensitive ]]; then sens=$((sens + added + deleted)); fi
+done <"$numstat"
+
+if [ "$level" = 1 ]; then
+  if [ "$sens" -gt 0 ]; then echo high
+  elif [ "$code" -gt "$MEDIUM_CODE" ]; then echo medium
+  else echo low
+  fi
+  exit 0
+fi
+
+echo "production $prod/$PROD_MAX · sensitive $sens/$SENSITIVE_MAX · total $total/$TOTAL_MAX"
+over=0
+[ "$prod" -le "$PROD_MAX" ] || { echo "production: $prod added lines (cap $PROD_MAX)"; over=1; }
+[ "$sens" -le "$SENSITIVE_MAX" ] || { echo "sensitive: $sens added and deleted lines (cap $SENSITIVE_MAX)"; over=1; }
+[ "$total" -le "$TOTAL_MAX" ] || { echo "total: $total added lines (cap $TOTAL_MAX)"; over=1; }
+[ "$over" = 0 ] && exit 0
+echo 'split the change into stacked pull requests'
+exit 1

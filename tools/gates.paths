@@ -1,0 +1,11 @@
+# Files that guard the delivery pipeline. bin/agent-merge refuses any pull
+# request that touches them: a person reviews and merges those from the GitHub
+# web UI. An entry ending in / covers the whole folder.
+.claude/
+.github/workflows/
+AGENTS.md
+CLAUDE.md
+bin/agent-merge
+bin/agent-review
+bin/change-size
+tools/
