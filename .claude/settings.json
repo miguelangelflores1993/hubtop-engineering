@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(bin/agent-merge:*)",
+      "Bash(bin/change-size:*)",
+      "Bash(bin/agent-review check:*)",
+      "Bash(bin/agent-review id:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh pr checks:*)"
+    ],
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(gh api *statuses*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Write(.git/agent-reviews/**)",
+      "Edit(.git/agent-reviews/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-receipt-guard.py\"; if [ ! -x \"$f\" ]; then if cat | grep -q agent-review; then echo 'review-receipt-guard is missing and the command mentions agent-review; refusing' >&2; exit 2; fi; exit 0; fi; exec \"$f\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|WebFetch|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/secret-output-scan.py\"; [ -x \"$f\" ] || exit 0; exec \"$f\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/close-gate.sh\"; [ -x \"$f\" ] || exit 0; exec \"$f\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

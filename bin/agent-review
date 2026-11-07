@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Receipts of the two-stage review (AGENTS.md "Delivery pipeline"), stored under
+# the patch-id of the code diff (`git patch-id --verbatim`: whitespace counts).
+# bin/agent-merge requires both before it merges a pull request.
+#
+#   Stage 1: the verifier agent saves its APPROVED.
+#   Stage 2: the lead runs /code-review <level> on the same diff and saves
+#            NO BLOCKERS with --stage review and the --level it ran. The
+#            receipt is refused if that level is lower than the one the diff
+#            asks for (bin/change-size --level).
+#
+# The stages are independent and can run in parallel. A receipt counts only if
+# its first line starts with its stage's verdict: an empty file doesn't count.
+# A diff with no code (docs, specs, tooling) needs no receipts.
+# Who may run `approve` for each stage is enforced by
+# .claude/hooks/review-receipt-guard.py, not by this script.
+#
+#   bin/agent-review approve [--base REF] [--head REV] < verdict
+#   bin/agent-review approve --stage review --level low|medium|high [--base REF] [--head REV] < verdict
+#   bin/agent-review check   [--base REF] [--head REV]
+#   bin/agent-review id      [--base REF] [--head REV]
+set -euo pipefail
+
+usage() { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+base=origin/main
+head=HEAD
+stage=verifier
+level=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --base) base=${2:?}; shift 2 ;;
+    --head) head=${2:?}; shift 2 ;;
+    --stage) stage=${2:?}; shift 2 ;;
+    --level) level=${2:?}; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ $stage == verifier || $stage == review ]] || usage
+
+rank() { case $1 in low) echo 1 ;; medium) echo 2 ;; high) echo 3 ;; *) return 1 ;; esac; }
+if [ "$cmd" = approve ] && [ "$stage" = review ]; then
+  rank "$level" >/dev/null || usage
+elif [ -n "$level" ]; then
+  usage
+fi
+
+code=(apps packages supabase ':!*.g.dart' ':!*.freezed.dart' ':!*.gen.go' ':!*.sql.go' ':!*.lock' ':!*.sum')
+dir="$(git rev-parse --path-format=absolute --git-common-dir)/agent-reviews"
+mb=$(git merge-base "$base" "$head")
+id=$(git diff "$mb" "$head" -- "${code[@]}" | git patch-id --verbatim | cut -d' ' -f1)
+receipt="$dir/$id"
+review_receipt="$dir/$id.review"
+
+valid() { [ -f "$1" ] && [[ $(head -n 1 "$1") == "$2"* ]]; }
+
+case $cmd in
+  id) echo "${id:-no code}" ;;
+  approve)
+    verdict=$(cat)
+    if [ "$stage" = review ]; then want='NO BLOCKERS' target=$review_receipt
+    else want=APPROVED target=$receipt
+    fi
+    [[ $verdict == "$want"* ]] || { echo "✗ agent-review: only a verdict starting with $want is saved" >&2; exit 1; }
+    [ -z "$(git status --porcelain -- "${code[@]}")" ] \
+      || { echo '✗ agent-review: there is uncommitted code; a receipt is for what is committed' >&2; exit 1; }
+    [ -n "$id" ] || { echo 'agent-review: the diff has no code; no receipt needed'; exit 0; }
+    if [ "$stage" = review ]; then
+      required=$("$(dirname "$0")/change-size" --level --base "$base" --head "$head") \
+        || { echo '✗ agent-review: bin/change-size --level failed' >&2; exit 1; }
+      if [ "$(rank "$level")" -lt "$(rank "$required")" ]; then
+        echo "✗ agent-review: this diff asks for /code-review $required (you ran $level)" >&2
+        exit 1
+      fi
+      verdict=$verdict$'\n'"level: $level"
+    fi
+    mkdir -p "$dir"
+    printf '%s\n' "$verdict" >"$target"
+    echo "agent-review: receipt ${id:0:12} ($stage) saved"
+    ;;
+  check)
+    [ -n "$id" ] || exit 0
+    has1=0 has2=0
+    valid "$receipt" APPROVED && has1=1
+    valid "$review_receipt" 'NO BLOCKERS' && has2=1
+    if [ "$has1" = 1 ] && [ "$has2" = 1 ]; then
+      cat "$receipt"
+      echo 'Code review (/code-review):'
+      cat "$review_receipt"
+      exit 0
+    fi
+    echo "✗ agent-review: the code in ${mb:0:10}..$head (patch-id ${id:0:12}) is missing:" >&2
+    [ "$has1" = 1 ] || echo '  - stage 1: run the verifier on the committed diff (on APPROVED it saves the receipt)' >&2
+    [ "$has2" = 1 ] || echo '  - stage 2: run /code-review <level> (bin/change-size --level) and save NO BLOCKERS with bin/agent-review approve --stage review --level <level>' >&2
+    exit 1
+    ;;
+  *) usage ;;
+esac
