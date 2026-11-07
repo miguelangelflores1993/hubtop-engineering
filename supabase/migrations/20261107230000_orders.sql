@@ -3,7 +3,10 @@
 -- Three layers of protection, from outside in:
 --   1. The tables live in schema `app`, which the Data API doesn't expose
 --      (config.toml exposes only `public` and `graphql_public`).
---   2. `anon` and `authenticated` get no privileges on `app` at all.
+--   2. `anon` and `authenticated` have no USAGE on `app`, so nothing inside
+--      it (tables, sequences, functions) is reachable by them, whatever
+--      object-level defaults Postgres applies (functions get EXECUTE for
+--      PUBLIC by default; without USAGE on the schema it can't be used).
 --   3. RLS is enabled on every table with no policy for those roles, so even
 --      a future grant by mistake returns zero rows instead of everyone's data.
 -- The Go API is the only door: it connects as `postgres` (which bypasses RLS)
@@ -31,8 +34,13 @@ create table app.orders (
   id uuid primary key default gen_random_uuid(),
   client_id uuid not null references app.accounts (id) on delete cascade,
   category text not null references app.categories (slug),
-  -- FR-005 is checked in the app for a fast message; the database enforces it anyway
-  description text not null check (length(btrim(description)) between 10 and 500),
+  -- FR-005 is checked in the app for a fast message; the database enforces it anyway.
+  -- The cap is on what is stored; the minimum ignores any whitespace (spaces,
+  -- tabs, newlines), so padding can't fake a description.
+  description text not null check (
+    length(description) <= 500
+    and length(regexp_replace(description, '^\s+|\s+$', '', 'g')) >= 10
+  ),
   -- text + check instead of an enum: adding a status later is one migration, not a type change
   status text not null default 'open' check (status in ('open')),
   created_at timestamptz not null default now()
@@ -47,8 +55,5 @@ create index orders_client_idx on app.orders (client_id, created_at desc);
 alter table app.categories enable row level security;
 alter table app.accounts enable row level security;
 alter table app.orders enable row level security;
-
--- Tables created later in `app` must not inherit any grant for the API roles.
-alter default privileges in schema app revoke all on tables from public, anon, authenticated;
-alter default privileges in schema app revoke all on sequences from public, anon, authenticated;
-alter default privileges in schema app revoke all on functions from public, anon, authenticated;
+-- Tables added later must enable RLS too: supabase/tests/orders_rls_test.sql
+-- fails if any table in `app` has it off.
