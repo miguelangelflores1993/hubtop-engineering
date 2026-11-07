@@ -9,6 +9,8 @@
   interpreter one-liners, `find -delete/-exec` and `cd agent-reviews && <write>`
   are all refused. Reads (cat, ls, grep, jq, git) pass, and quoted text is an
   argument, not a path: a commit message that names `agent-reviews` passes.
+  A heredoc body is data (a PR description, say) unless it feeds a shell or
+  an interpreter: then mentioning agent-review in it is refused.
 
 Who is calling comes from `agent_type` in the hook event: the main session has
 none, a subagent carries its name.
@@ -71,15 +73,41 @@ def is_redirect(token):
     return token and set(token) <= set('<>&|') and '>' in token
 
 
+HEREDOC = re.compile(r'(?<!<)<<-?\s*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\1')
+EXECUTES = re.compile(r'(^|[;&|(]\s*|\s)(bash|sh|zsh|eval|source|\.|python[0-9.]*|perl|node|ruby)(\s|$)')
+
+
+def strip_heredocs(command):
+    """Drop heredoc bodies: they are stdin data, not commands. A body that feeds a
+    shell or an interpreter is code, so if it mentions agent-review it is refused."""
+    lines = command.split('\n')
+    kept = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        i += 1
+        for match in HEREDOC.finditer(line):
+            delimiter = match.group(2)
+            body = []
+            while i < len(lines) and lines[i].strip() != delimiter:
+                body.append(lines[i])
+                i += 1
+            i += 1  # the delimiter line
+            if 'agent-review' in '\n'.join(body) and EXECUTES.search(line[:match.start()]):
+                raise Deny(NONLITERAL)
+    return '\n'.join(kept)
+
+
 def check(command, agent_type, depth=0):
     if depth > 5:
         raise Deny(NONLITERAL)
+    command = strip_heredocs(command)
     # agent-review inside a substitution, eval, xargs or a heredoc: not literal
     for match in SUBSTITUTION.finditer(command):
         if 'agent-review' in (match.group(1) or match.group(2) or ''):
             raise Deny(NONLITERAL)
-    # a heredoc body isn't parsed; a here-string (<<<) is a plain argument
-    if re.search(r'\b(eval|xargs)\b', command) or re.search(r'(?<!<)<<(?!<)', command):
+    if re.search(r'\b(eval|xargs)\b', command):
         raise Deny(NONLITERAL)
 
     in_receipts = False

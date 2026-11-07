@@ -42,6 +42,11 @@ expect_guard allow ''       "ls .git/agent-reviews 2>/dev/null"
 expect_guard allow ''       "git commit -m 'docs: explain agent-reviews folder'"
 expect_guard allow ''       "go test ./..."
 expect_guard deny  ''       "$AR approve 'unterminated"
+nl=$'\n'
+expect_guard allow ''       "gh pr create --body \"\$(cat <<'EOF'${nl}Adds $AR approve and agent-reviews docs.${nl}EOF${nl})\""
+expect_guard deny  ''       "bash <<'EOF'${nl}printf 'APPROVED' | $AR approve${nl}EOF"
+expect_guard deny  ''       "python3 - <<EOF${nl}open('.git/agent-reviews/x','w') # agent-review${nl}EOF"
+expect_guard deny  ''       "cat <<EOF > .git/agent-reviews/x${nl}APPROVED${nl}EOF"
 
 # --- secret-output-scan.py ---------------------------------------------------
 scan() { jq -nc --arg o "$1" '{tool_name:"Bash",tool_response:{stdout:$o,stderr:""}}' | "$hooks/secret-output-scan.py"; }
