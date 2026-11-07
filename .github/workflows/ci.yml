@@ -113,7 +113,7 @@ jobs:
         with:
           version: latest
       - name: Start local Supabase (applies migrations and seed)
-        run: supabase start -x studio,imgproxy,inbucket,edge-runtime,logflare,vector,supavisor
+        run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,realtime,storage-api
       - name: Lint the schema
         run: supabase db lint --level warning --fail-on error
       - name: SQL tests (pgTAP)

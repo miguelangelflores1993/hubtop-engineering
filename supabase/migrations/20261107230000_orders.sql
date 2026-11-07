@@ -1,0 +1,54 @@
+-- Spec 001: a client creates an order and a professional sees it.
+--
+-- Three layers of protection, from outside in:
+--   1. The tables live in schema `app`, which the Data API doesn't expose
+--      (config.toml exposes only `public` and `graphql_public`).
+--   2. `anon` and `authenticated` get no privileges on `app` at all.
+--   3. RLS is enabled on every table with no policy for those roles, so even
+--      a future grant by mistake returns zero rows instead of everyone's data.
+-- The Go API is the only door: it connects as `postgres` (which bypasses RLS)
+-- and decides authorization from the verified JWT.
+
+create schema if not exists app;
+revoke all on schema app from public, anon, authenticated;
+
+-- Categories are reference data, loaded by the seed.
+create table app.categories (
+  slug text primary key check (slug ~ '^[a-z][a-z-]*$'),
+  name text not null
+);
+
+-- One row per person. `id` is the same uuid as auth.users: the JWT `sub`.
+-- A professional has one category in this slice; a client has none.
+create table app.accounts (
+  id uuid primary key references auth.users (id) on delete cascade,
+  display_name text not null check (length(display_name) between 1 and 80),
+  professional_category text references app.categories (slug),
+  created_at timestamptz not null default now()
+);
+
+create table app.orders (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references app.accounts (id) on delete cascade,
+  category text not null references app.categories (slug),
+  -- FR-005 is checked in the app for a fast message; the database enforces it anyway
+  description text not null check (length(btrim(description)) between 10 and 500),
+  -- text + check instead of an enum: adding a status later is one migration, not a type change
+  status text not null default 'open' check (status in ('open')),
+  created_at timestamptz not null default now()
+);
+
+-- FR-003: the feed reads open orders of one category, newest first.
+-- A partial index keeps it small: closed orders never enter it.
+create index orders_feed_idx on app.orders (category, created_at desc) where status = 'open';
+-- "My orders" for the client.
+create index orders_client_idx on app.orders (client_id, created_at desc);
+
+alter table app.categories enable row level security;
+alter table app.accounts enable row level security;
+alter table app.orders enable row level security;
+
+-- Tables created later in `app` must not inherit any grant for the API roles.
+alter default privileges in schema app revoke all on tables from public, anon, authenticated;
+alter default privileges in schema app revoke all on sequences from public, anon, authenticated;
+alter default privileges in schema app revoke all on functions from public, anon, authenticated;
