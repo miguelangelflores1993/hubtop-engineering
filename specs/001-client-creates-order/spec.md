@@ -70,7 +70,8 @@ through the API and the database and came back to a different person.
 
 ## Requirements
 
-- **FR-001**: The API MUST expose `POST /orders` and `GET /orders/feed`, both
+- **FR-001**: The API MUST expose `POST /orders`, `GET /orders/feed` and
+  `GET /orders/mine` (the client's "My orders" in story 1), all
   described in `openapi.yaml`.
 - **FR-002**: The API MUST take the account id from the verified JWT (`sub`)
   and MUST ignore any owner field in the request.
