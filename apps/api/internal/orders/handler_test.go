@@ -143,6 +143,7 @@ func TestCreateValidatesTheDescription(t *testing.T) {
 		{"501 characters", strings.Repeat("a", 501), false, ""},
 		{"counted in characters, not bytes", strings.Repeat("ñ", 500), true, strings.Repeat("ñ", 500)},
 		{"padding does not count", "   short   ", false, ""},
+		{"a NUL byte (Postgres can't store it)", "The kitchen sink\x00 is leaking", false, ""},
 		{"stored without padding", "\n  The kitchen sink is leaking  \n", true, "The kitchen sink is leaking"},
 	}
 	for _, tc := range cases {
@@ -183,11 +184,28 @@ func TestCreateMapsStoreErrors(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsMalformedJSON(t *testing.T) {
-	store := &fakeStore{}
-	code, body := newServer(t, store).do(http.MethodPost, "/orders", ana, `{"category":`)
-	if code != http.StatusBadRequest || body["error"] != "invalid_json" || store.calls != 0 {
-		t.Fatalf("got %d %v, store calls %d; want 400 invalid_json", code, body, store.calls)
+func TestCreateRejectsBadBodies(t *testing.T) {
+	valid := `{"category":"plumbing","description":"The kitchen sink is leaking"}`
+	cases := []struct {
+		name, body string
+		status     int
+		errorKey   string
+	}{
+		{"truncated JSON", `{"category":`, http.StatusBadRequest, "invalid_json"},
+		{"data after the object", valid + `{"category":"electrical"}`, http.StatusBadRequest, "invalid_json"},
+		{"over 16 KiB", `{"category":"plumbing","description":"` + strings.Repeat("a", maxBody) + `"}`,
+			http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"NUL in the category", `{"category":"plumbing\u0000","description":"The kitchen sink is leaking"}`,
+			http.StatusUnprocessableEntity, "unknown_category"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			code, body := newServer(t, store).do(http.MethodPost, "/orders", ana, tc.body)
+			if code != tc.status || body["error"] != tc.errorKey || store.calls != 0 {
+				t.Fatalf("got %d %v, store calls %d; want %d %s and no store call", code, body, store.calls, tc.status, tc.errorKey)
+			}
+		})
 	}
 }
 

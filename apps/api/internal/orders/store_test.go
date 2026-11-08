@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,11 @@ func txStore(t *testing.T) (*PGStore, pgx.Tx) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
+		// CI's database job sets REQUIRE_TEST_DATABASE: there a missing URL is
+		// a broken job, not a reason to pass with nothing tested.
+		if os.Getenv("REQUIRE_TEST_DATABASE") != "" {
+			t.Fatal("REQUIRE_TEST_DATABASE is set but TEST_DATABASE_URL is empty")
+		}
 		t.Skip("TEST_DATABASE_URL not set: start the local stack to run the SQL tests")
 	}
 	ctx := context.Background()
@@ -57,8 +63,8 @@ func TestStoreFlow(t *testing.T) {
 	ctx := context.Background()
 
 	order, err := store.Create(ctx, ana, "plumbing", "The bathroom tap drips all night")
-	if err != nil || order.Status != "open" {
-		t.Fatalf("Create: %+v, %v", order, err)
+	if err != nil || order.Status != "open" || order.CreatedAt.Location() != time.UTC {
+		t.Fatalf("Create: %+v, %v; want open, created_at in UTC", order, err)
 	}
 
 	// Story 2.1: a plumbing professional sees it first (newest first).

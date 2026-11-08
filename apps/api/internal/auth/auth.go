@@ -9,6 +9,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -65,7 +66,10 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 		}
 		id, err := v.Verify(token)
 		if err != nil {
-			unauthorized(w) // never echo why: it would help a forger
+			// The reason goes to the log, never to the caller: it would help a
+			// forger. The log is how a wrong issuer or JWKS gets noticed.
+			slog.WarnContext(r.Context(), "token rejected", "err", err)
+			unauthorized(w)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))

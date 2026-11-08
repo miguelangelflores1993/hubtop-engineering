@@ -89,6 +89,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 	}
+	stop() // a second Ctrl-C now kills the process instead of waiting
 	// Finish the requests in flight, then stop.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

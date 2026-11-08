@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -29,9 +30,23 @@ func NewHandler(store Store) *Handler { return &Handler{store: store} }
 
 // Routes registers every route behind requireAuth: none of them is public.
 func (h *Handler) Routes(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler) {
-	mux.Handle("POST /orders", requireAuth(http.HandlerFunc(h.create)))
-	mux.Handle("GET /orders/feed", requireAuth(http.HandlerFunc(h.feed)))
-	mux.Handle("GET /orders/mine", requireAuth(http.HandlerFunc(h.mine)))
+	mux.Handle("POST /orders", requireAuth(withCaller(h.create)))
+	mux.Handle("GET /orders/feed", requireAuth(withCaller(h.feed)))
+	mux.Handle("GET /orders/mine", requireAuth(withCaller(h.mine)))
+}
+
+// withCaller hands each handler the verified caller, so no handler can get
+// an identity any other way. It fails closed: a route wired without the auth
+// middleware has no caller, and answering it as anyone would be worse than a 500.
+func withCaller(h func(http.ResponseWriter, *http.Request, uuid.UUID)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := auth.AccountID(r.Context())
+		if !ok {
+			internalError(w, r, errors.New("route served without auth middleware"))
+			return
+		}
+		h(w, r, caller)
+	})
 }
 
 // createRequest has no owner field on purpose (FR-002): a body that names
@@ -44,21 +59,32 @@ type createRequest struct {
 
 const maxBody = 16 << 10 // a 500-character description fits many times over
 
-func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
-	caller, ok := callerOrFail(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) create(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
 	var in createRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&in); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	err := dec.Decode(&in)
+	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
+		err = errors.New("data after the JSON object")
+	}
+	var tooBig *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooBig):
+		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large")
+		return
+	case err != nil:
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	// FR-005 is the app's job, but the API never trusts a client: same rule,
 	// counted in characters (not bytes) and without surrounding whitespace.
+	// Postgres text can't hold NUL, so it would fail as a 500 later.
 	description := strings.TrimSpace(in.Description)
-	if n := utf8.RuneCountInString(description); n < 10 || n > 500 {
+	if n := utf8.RuneCountInString(description); n < 10 || n > 500 || strings.ContainsRune(description, 0) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_description")
+		return
+	}
+	if strings.ContainsRune(in.Category, 0) {
+		writeError(w, http.StatusUnprocessableEntity, "unknown_category")
 		return
 	}
 	order, err := h.store.Create(r.Context(), caller, in.Category, description)
@@ -76,11 +102,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) feed(w http.ResponseWriter, r *http.Request) {
-	caller, ok := callerOrFail(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) feed(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
 	category, orders, err := h.store.Feed(r.Context(), caller)
 	switch {
 	case errors.Is(err, ErrNoAccount):
@@ -93,27 +115,13 @@ func (h *Handler) feed(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) mine(w http.ResponseWriter, r *http.Request) {
-	caller, ok := callerOrFail(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) mine(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
 	orders, err := h.store.Mine(r.Context(), caller)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": nonNil(orders)})
-}
-
-// callerOrFail fails closed: a route wired without the middleware has no
-// caller, and answering it as anyone would be worse than a 500.
-func callerOrFail(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	id, ok := auth.AccountID(r.Context())
-	if !ok {
-		internalError(w, r, errors.New("route served without auth middleware"))
-	}
-	return id, ok
 }
 
 func nonNil(o []Order) []Order {

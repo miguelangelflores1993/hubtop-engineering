@@ -35,7 +35,11 @@ paths:
           $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
         '422':
+          $ref: '#/components/responses/Error'
+        '500':
           $ref: '#/components/responses/Error'
   /orders/feed:
     get:
@@ -62,6 +66,8 @@ paths:
           $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
+        '500':
+          $ref: '#/components/responses/Error'
   /orders/mine:
     get:
       operationId: getMyOrders
@@ -82,6 +88,8 @@ paths:
                       $ref: '#/components/schemas/Order'
         '401':
           $ref: '#/components/responses/Error'
+        '500':
+          $ref: '#/components/responses/Error'
 components:
   securitySchemes:
     bearer:
@@ -99,9 +107,10 @@ components:
           examples: [plumbing]
         description:
           type: string
-          description: 10 to 500 characters once surrounding whitespace is removed; stored trimmed.
-          minLength: 10
-          maxLength: 500
+          description: |
+            10 to 500 characters once surrounding whitespace is removed; stored
+            trimmed. No length limits in the schema on purpose: they would count
+            the untrimmed string and disagree with the API.
           examples: [The kitchen sink is leaking under the cabinet.]
     Order:
       type: object
@@ -127,13 +136,14 @@ components:
         error:
           type: string
           description: A stable code; the message never says why a token was rejected.
-          enum: [unauthorized, invalid_json, invalid_description, unknown_category, no_account, internal]
+          enum: [unauthorized, invalid_json, body_too_large, invalid_description, unknown_category, no_account, internal]
   responses:
     Error:
       description: |
-        400 invalid_json · 401 unauthorized (no token, expired, forged, wrong
-        issuer or audience) · 403 no_account (signed in but no account row) ·
-        422 invalid_description or unknown_category
+        400 invalid_json (not one JSON object) · 401 unauthorized (no token,
+        expired, forged, wrong issuer or audience) · 403 no_account (signed in
+        but no account row) · 413 body_too_large (over 16 KiB) ·
+        422 invalid_description or unknown_category · 500 internal
       content:
         application/json:
           schema:

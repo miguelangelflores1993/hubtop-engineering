@@ -52,7 +52,7 @@ func (s *PGStore) Create(ctx context.Context, clientID uuid.UUID, category, desc
 	if err != nil {
 		return Order{}, err
 	}
-	o, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[Order])
+	o, err := pgx.CollectExactlyOneRow(rows, scanOrder)
 	return o, constraintError(err)
 }
 
@@ -87,7 +87,15 @@ func (s *PGStore) list(ctx context.Context, where string, arg any) ([]Order, err
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByName[Order])
+	return pgx.CollectRows(rows, scanOrder)
+}
+
+// scanOrder reads a row and normalizes created_at to UTC: pgx would use the
+// server's local zone, and the JSON would change with the machine it runs on.
+func scanOrder(row pgx.CollectableRow) (Order, error) {
+	o, err := pgx.RowToStructByName[Order](row)
+	o.CreatedAt = o.CreatedAt.UTC()
+	return o, err
 }
 
 // constraintError turns the constraints the API relies on into errors the
