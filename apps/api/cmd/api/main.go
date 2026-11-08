@@ -29,6 +29,19 @@ import (
 	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/orders"
 )
 
+// requestTimeout bounds each request's database work: pgx cancels a query
+// when the request context expires.
+const requestTimeout = 5 * time.Second
+
+// withTimeout gives every request a context that expires after d.
+func withTimeout(next http.Handler, d time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), d)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("api stopped", "err", err)
@@ -61,9 +74,20 @@ func run() error {
 	// The JWKS is fetched now and refreshed in the background, so a key
 	// rotation in Auth reaches the API without a restart.
 	issuer := strings.TrimRight(supabaseURL, "/") + "/auth/v1"
-	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{issuer + "/.well-known/jwks.json"})
+	jwksURL := issuer + "/.well-known/jwks.json"
+	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
 	if err != nil {
 		return fmt.Errorf("jwks: %w", err)
+	}
+	// NewDefaultCtx ignores a failed first fetch (jwkset's default storage
+	// sets NoErrorReturnFirstHTTPReq), so check that keys really loaded:
+	// an API that can't verify any token must not start.
+	keys, err := jwks.Storage().KeyReadAll(ctx)
+	if err != nil {
+		return fmt.Errorf("jwks: no keys from %s: %w", jwksURL, err)
+	}
+	if len(keys) == 0 {
+		return fmt.Errorf("jwks: no keys at %s", jwksURL)
 	}
 	verifier := auth.NewVerifier(jwks.Keyfunc, issuer)
 
@@ -74,7 +98,7 @@ func run() error {
 	// Timeouts so a slow or idle client can't hold a connection forever.
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           withTimeout(mux, requestTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

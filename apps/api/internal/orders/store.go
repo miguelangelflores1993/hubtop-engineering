@@ -20,8 +20,8 @@ type Order struct {
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 }
 
-// FeedLimit is FR-003's "at most 50".
-const FeedLimit = 50
+// PageSize is FR-003's "at most 50".
+const PageSize = 50
 
 var (
 	ErrUnknownCategory    = errors.New("unknown category")
@@ -56,37 +56,90 @@ func (s *PGStore) Create(ctx context.Context, clientID uuid.UUID, category, desc
 	return o, constraintError(err)
 }
 
-// Feed returns the caller's category (nil if they aren't a professional) and
-// the newest open orders in it, in one round trip: no row means no account,
-// and a caller without a category matches no orders.
-func (s *PGStore) Feed(ctx context.Context, accountID uuid.UUID) (*string, []Order, error) {
-	var category *string
-	var orders []Order
-	// order by matches orders_feed_idx; id breaks ties so the order is stable
-	err := s.db.QueryRow(ctx, `
-		select a.professional_category, (
-		  select coalesce(json_agg(f order by f.created_at desc, f.id desc), '[]')
-		  from (select `+orderColumns+` from app.orders
-		        where status = 'open' and category = a.professional_category
-		        order by created_at desc, id desc limit $2) f)
-		from app.accounts a where a.id = $1`, accountID, FeedLimit).Scan(&category, &orders)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, ErrNoAccount
-	}
-	for i := range orders {
-		orders[i].CreatedAt = orders[i].CreatedAt.UTC()
-	}
-	return category, orders, err
+// Page is one screen of orders. HasMore says the list was cut at PageSize.
+type Page struct {
+	Orders  []Order
+	HasMore bool
 }
 
-// Mine returns the caller's own orders, newest first.
-func (s *PGStore) Mine(ctx context.Context, clientID uuid.UUID) ([]Order, error) {
-	rows, err := s.db.Query(ctx, `select `+orderColumns+` from app.orders
-		where client_id = $1 order by created_at desc, id desc limit $2`, clientID, FeedLimit)
+// The only two WHERE clauses page accepts. They are constants: every value
+// reaches the query as a parameter. `a` is the caller's account row.
+const (
+	feedFilter = `status = 'open' and category = a.professional_category`
+	mineFilter = `client_id = a.id`
+)
+
+// Feed returns the caller's category (nil if they aren't a professional) and
+// the newest open orders in it. No account is ErrNoAccount; a caller without a
+// category matches no orders.
+func (s *PGStore) Feed(ctx context.Context, accountID uuid.UUID) (*string, Page, error) {
+	return s.page(ctx, feedFilter, accountID)
+}
+
+// Mine returns the caller's own orders, newest first. An unknown account is
+// ErrNoAccount, as in Feed.
+func (s *PGStore) Mine(ctx context.Context, clientID uuid.UUID) (Page, error) {
+	_, page, err := s.page(ctx, mineFilter, clientID)
+	return page, err
+}
+
+// page runs one query: the account row, left-joined to its orders. Zero rows
+// is no account; a row with a null order id is an account without orders. It
+// fetches PageSize+1 rows to learn whether the list was cut. The order by
+// matches orders_feed_idx and orders_client_idx; id breaks ties so the order
+// is stable. Columns are
+// scanned by position, so a JSON tag can't change what is read.
+func (s *PGStore) page(ctx context.Context, where string, accountID uuid.UUID) (*string, Page, error) {
+	rows, err := s.db.Query(ctx, `
+		select a.professional_category, o.id, o.category, o.description, o.status, o.created_at
+		from app.accounts a
+		left join lateral (
+		  select `+orderColumns+` from app.orders
+		  where `+where+`
+		  order by created_at desc, id desc limit $2) o on true
+		where a.id = $1
+		order by o.created_at desc, o.id desc`, accountID, PageSize+1)
 	if err != nil {
-		return nil, err
+		return nil, Page{}, err
 	}
-	return pgx.CollectRows(rows, scanOrder)
+	defer rows.Close()
+
+	var category *string
+	var page Page
+	found := false
+	for rows.Next() {
+		var (
+			id          *uuid.UUID
+			ocategory   *string
+			description *string
+			status      *string
+			createdAt   *time.Time
+		)
+		if err := rows.Scan(&category, &id, &ocategory, &description, &status, &createdAt); err != nil {
+			return nil, Page{}, err
+		}
+		found = true
+		if id == nil {
+			continue // the account has no orders
+		}
+		if ocategory == nil || description == nil || status == nil || createdAt == nil {
+			return nil, Page{}, errors.New("order row with null columns")
+		}
+		page.Orders = append(page.Orders, Order{
+			ID: *id, Category: *ocategory, Description: *description, Status: *status,
+			CreatedAt: createdAt.UTC(), // pgx would use the server's local zone
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, Page{}, err
+	}
+	if !found {
+		return nil, Page{}, ErrNoAccount
+	}
+	if len(page.Orders) > PageSize {
+		page.Orders, page.HasMore = page.Orders[:PageSize], true
+	}
+	return category, page, nil
 }
 
 // scanOrder reads a row and normalizes created_at to UTC: pgx would use the
