@@ -1,9 +1,6 @@
 package auth
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
@@ -12,40 +9,17 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth/authtest"
 )
 
-const issuer = "http://auth.example.test/auth/v1"
-
-var ana = uuid.MustParse("11111111-1111-4111-8111-111111111111")
-
-func newKey(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
-}
-
-// validClaims is what Supabase Auth puts in a signed-in user's token.
-func validClaims() jwt.MapClaims {
-	return jwt.MapClaims{
-		"iss":  issuer,
-		"aud":  "authenticated",
-		"sub":  ana.String(),
-		"role": "authenticated",
-		"exp":  time.Now().Add(time.Hour).Unix(),
-	}
-}
-
-func sign(t *testing.T, method jwt.SigningMethod, key any, claims jwt.MapClaims) string {
-	t.Helper()
-	s, err := jwt.NewWithClaims(method, claims).SignedString(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
+var (
+	ana         = uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	issuer      = authtest.Issuer
+	newKey      = authtest.NewKey
+	sign        = authtest.Sign
+	validClaims = func() jwt.MapClaims { return authtest.Claims(ana) }
+)
 
 func TestMiddleware(t *testing.T) {
 	trusted := newKey(t)

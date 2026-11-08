@@ -3,8 +3,6 @@ package orders
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,9 +15,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth"
+	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth/authtest"
 )
-
-const issuer = "http://auth.example.test/auth/v1"
 
 var (
 	ana   = uuid.MustParse("11111111-1111-4111-8111-111111111111")
@@ -63,25 +60,15 @@ type server struct {
 }
 
 func newServer(t *testing.T, store *fakeStore) *server {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier := auth.NewVerifier(func(*jwt.Token) (any, error) { return &key.PublicKey, nil }, issuer)
+	key := authtest.NewKey(t)
+	verifier := auth.NewVerifier(func(*jwt.Token) (any, error) { return &key.PublicKey, nil }, authtest.Issuer)
 	mux := http.NewServeMux()
 	NewHandler(store).Routes(mux, verifier.Middleware)
 	return &server{t: t, mux: mux, key: key, store: store}
 }
 
 func (s *server) token(sub uuid.UUID) string {
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iss": issuer, "aud": "authenticated", "sub": sub.String(),
-		"exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString(s.key)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return tok
+	return authtest.Sign(s.t, jwt.SigningMethodES256, s.key, authtest.Claims(sub))
 }
 
 // do sends a request as `as` (uuid.Nil: no token) and decodes the JSON reply.

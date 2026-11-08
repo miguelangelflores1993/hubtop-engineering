@@ -57,33 +57,32 @@ func (s *PGStore) Create(ctx context.Context, clientID uuid.UUID, category, desc
 }
 
 // Feed returns the caller's category (nil if they aren't a professional) and
-// the newest open orders in it.
+// the newest open orders in it, in one round trip: no row means no account,
+// and a caller without a category matches no orders.
 func (s *PGStore) Feed(ctx context.Context, accountID uuid.UUID) (*string, []Order, error) {
 	var category *string
-	err := s.db.QueryRow(ctx,
-		`select professional_category from app.accounts where id = $1`, accountID).Scan(&category)
+	var orders []Order
+	// order by matches orders_feed_idx; id breaks ties so the order is stable
+	err := s.db.QueryRow(ctx, `
+		select a.professional_category, (
+		  select coalesce(json_agg(f order by f.created_at desc, f.id desc), '[]')
+		  from (select `+orderColumns+` from app.orders
+		        where status = 'open' and category = a.professional_category
+		        order by created_at desc, id desc limit $2) f)
+		from app.accounts a where a.id = $1`, accountID, FeedLimit).Scan(&category, &orders)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, ErrNoAccount
 	}
-	if err != nil || category == nil {
-		return nil, []Order{}, err
+	for i := range orders {
+		orders[i].CreatedAt = orders[i].CreatedAt.UTC()
 	}
-	// order by matches orders_feed_idx; id breaks ties so the order is stable
-	orders, err := s.list(ctx, `where status = 'open' and category = $1`, *category)
 	return category, orders, err
 }
 
 // Mine returns the caller's own orders, newest first.
 func (s *PGStore) Mine(ctx context.Context, clientID uuid.UUID) ([]Order, error) {
-	return s.list(ctx, `where client_id = $1`, clientID)
-}
-
-// list only ever receives the constant WHERE clauses above; every value goes
-// in as a parameter, never into the SQL text.
-func (s *PGStore) list(ctx context.Context, where string, arg any) ([]Order, error) {
-	rows, err := s.db.Query(ctx,
-		`select `+orderColumns+` from app.orders `+where+
-			` order by created_at desc, id desc limit $2`, arg, FeedLimit)
+	rows, err := s.db.Query(ctx, `select `+orderColumns+` from app.orders
+		where client_id = $1 order by created_at desc, id desc limit $2`, clientID, FeedLimit)
 	if err != nil {
 		return nil, err
 	}

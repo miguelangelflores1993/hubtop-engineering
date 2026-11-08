@@ -72,7 +72,7 @@ func TestStoreFlow(t *testing.T) {
 		t.Fatalf("Feed(carla) = %v, %d orders, %v; want plumbing with the new order first", category, len(feed), err)
 	}
 	for _, o := range feed {
-		if o.Category != "plumbing" || o.Status != "open" {
+		if o.Category != "plumbing" || o.Status != "open" || o.CreatedAt.Location() != time.UTC {
 			t.Errorf("Feed(carla) returned %+v", o)
 		}
 	}
