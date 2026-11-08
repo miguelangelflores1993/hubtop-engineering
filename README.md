@@ -1,5 +1,7 @@
 # HubTop — engineering case study
 
+[![CI](https://github.com/miguelangelflores1993/hubtop-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/miguelangelflores1993/hubtop-engineering/actions/workflows/ci.yml)
+
 > How I built a two-sided services marketplace (Flutter + Go + Supabase) almost
 > alone, by turning AI coding agents into a delivery pipeline with real gates.
 
@@ -236,7 +238,7 @@ modular monolith**. The boundaries were right; these were not:
 |---|---|---|
 | 1 | This case study | Done, demo GIF pending |
 | 2 | The agent pipeline, rebuilt generic and tested (see below) | Done |
-| 4 | Public CI: Flutter analyze and tests, Go tests, migration checks, badges | Planned |
+| 4 | Public CI: hook and script tests, gitleaks over the full history, a fake-data check; Go, Flutter and migration/RLS jobs that switch on as soon as their code exists | Done |
 | 3 | **HubTop Lite**: one end-to-end flow rebuilt from scratch (client creates an order → Go API stores it with identity from the JWT → professional sees it), with Supabase migrations, RLS tests and fake seed data | Planned |
 | 5 | A 2–3 minute demo video, and optionally a Flutter web build on fake data | Planned |
 
@@ -262,7 +264,7 @@ tested. Open the repo in Claude Code and it is active.
 | [`tools/gates.paths`](tools/gates.paths) | Files an agent can never merge: changes to the guardrails go to a person |
 | [`specs/001-client-creates-order`](specs/001-client-creates-order/spec.md) | Example spec, and the first one HubTop Lite will implement |
 
-Tests: `.claude/hooks/tests/hooks-test.sh` (30 cases) and
+Tests: `.claude/hooks/tests/hooks-test.sh` (34 cases) and
 `tools/tests/receipts-test.sh` (18 cases).
 
 ## Repository rules

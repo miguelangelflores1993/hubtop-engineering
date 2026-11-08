@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Detect stacks
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.stacks.outputs.go }}
+      flutter: ${{ steps.stacks.outputs.flutter }}
+      database: ${{ steps.stacks.outputs.database }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: stacks
+        # a stack's job runs only once its code exists (HubTop Lite lands in phase 3)
+        run: |
+          has() { if [ -n "$(git ls-files "$@")" ]; then echo true; else echo false; fi; }
+          {
+            echo "go=$(has apps/api/go.mod)"
+            echo "flutter=$(has 'apps/*/pubspec.yaml' 'packages/*/pubspec.yaml')"
+            echo "database=$(has supabase/config.toml)"
+          } >>"$GITHUB_OUTPUT"
+
+  tooling:
+    name: Tooling and hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck bin/* tools/*.sh tools/tests/*.sh .claude/hooks/*.sh .claude/hooks/tests/*.sh
+      - name: Hook tests
+        run: .claude/hooks/tests/hooks-test.sh
+      - name: Receipt and size tests
+        run: tools/tests/receipts-test.sh
+
+  secrets:
+    name: Secrets and fake data
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+      - name: gitleaks (full history)
+        run: gitleaks git . --no-banner --redact
+      - name: No real data
+        run: tools/check-fake-data.sh
+
+  go:
+    name: Go API
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  flutter:
+    name: Flutter
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.flutter == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Analyze and test every package
+        run: |
+          status=0
+          for pubspec in $(git ls-files 'apps/*/pubspec.yaml' 'packages/*/pubspec.yaml'); do
+            pkg=$(dirname "$pubspec")
+            echo "::group::$pkg"
+            (cd "$pkg" && flutter pub get && flutter analyze --fatal-infos) || status=1
+            if [ -d "$pkg/test" ]; then (cd "$pkg" && flutter test) || status=1; fi
+            echo "::endgroup::"
+          done
+          exit $status
+
+  database:
+    name: Migrations and RLS
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.database == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start local Supabase (applies migrations and seed)
+        run: supabase start -x studio,imgproxy,inbucket,edge-runtime,logflare,vector,supavisor
+      - name: Lint the schema
+        run: supabase db lint --level warning --fail-on error
+      - name: SQL tests (pgTAP)
+        run: supabase test db
