@@ -16,8 +16,8 @@ import (
 
 // Runs the real SQL against the local Supabase database with the fake seed
 // (supabase/seed.sql). Each test works inside a transaction that is rolled
-// back, so the seed never changes. Behind a build tag rather than a skip:
-// asking for these tests without a database is a failure, never a pass.
+// back, so the seed never changes. They sit behind a build tag, so
+// asking for them without a database fails instead of passing silently.
 //
 //	TEST_DATABASE_URL=$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"') \
 //	  go test -tags integration ./...
