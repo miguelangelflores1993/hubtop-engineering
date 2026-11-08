@@ -1,3 +1,5 @@
+//go:build integration
+
 package orders
 
 import (
@@ -14,9 +16,11 @@ import (
 
 // Runs the real SQL against the local Supabase database with the fake seed
 // (supabase/seed.sql). Each test works inside a transaction that is rolled
-// back, so the seed never changes.
+// back, so the seed never changes. Behind a build tag rather than a skip:
+// asking for these tests without a database is a failure, never a pass.
 //
-//	TEST_DATABASE_URL=$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"') go test ./...
+//	TEST_DATABASE_URL=$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"') \
+//	  go test -tags integration ./...
 var (
 	carla = uuid.MustParse("33333333-3333-4333-8333-333333333333") // plumbing
 	diego = uuid.MustParse("44444444-4444-4444-8444-444444444444") // electrical
@@ -26,12 +30,7 @@ func txStore(t *testing.T) (*PGStore, pgx.Tx) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		// CI's database job sets REQUIRE_TEST_DATABASE: there a missing URL is
-		// a broken job, not a reason to pass with nothing tested.
-		if os.Getenv("REQUIRE_TEST_DATABASE") != "" {
-			t.Fatal("REQUIRE_TEST_DATABASE is set but TEST_DATABASE_URL is empty")
-		}
-		t.Skip("TEST_DATABASE_URL not set: start the local stack to run the SQL tests")
+		t.Fatal("TEST_DATABASE_URL is empty: start the local stack (supabase start) and set it")
 	}
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, url)

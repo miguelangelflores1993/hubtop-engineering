@@ -76,7 +76,7 @@ jobs:
         with:
           go-version-file: apps/api/go.mod
           cache-dependency-path: apps/api/go.sum
-      - run: go vet ./...
+      - run: go vet -tags integration ./...
       - run: go test -race -count=1 ./...
 
   flutter:
@@ -130,5 +130,5 @@ jobs:
         working-directory: apps/api
         run: |
           TEST_DATABASE_URL=$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"')
-          export TEST_DATABASE_URL REQUIRE_TEST_DATABASE=1
-          go test -count=1 -run 'TestStore|TestFeedLimit' ./internal/orders/
+          export TEST_DATABASE_URL
+          go test -tags integration -count=1 ./internal/orders/
