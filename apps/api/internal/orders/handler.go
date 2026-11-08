@@ -69,6 +69,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, caller uuid.UUI
 		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large")
 		return
 	}
+	if err != nil {
+		// the client went away or the connection broke: not worth an Error
+		slog.InfoContext(r.Context(), "reading request body failed", "err", err)
+	}
 	var in createRequest
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err == nil {
@@ -155,6 +159,12 @@ func writeError(w http.ResponseWriter, status int, code string) {
 // internalError logs the cause and tells the caller nothing about it, except
 // that a query cut by the request's time limit is a 503 timeout.
 func internalError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.Canceled) {
+		// the client disconnected: nobody receives the body below
+		slog.InfoContext(r.Context(), "client canceled request", "method", r.Method, "path", r.URL.Path, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeError(w, http.StatusServiceUnavailable, "timeout")

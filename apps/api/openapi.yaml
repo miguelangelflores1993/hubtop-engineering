@@ -158,7 +158,9 @@ components:
         expired, forged, wrong issuer or audience) · 403 no_account (signed in
         but no account row) · 413 body_too_large (over 16 KiB) ·
         422 invalid_description or unknown_category · 500 internal ·
-        503 timeout (the database work took longer than 5 seconds; retry)
+        503 timeout (the request's time limit passed). A read is safe to
+        retry. After a 503 on POST /orders the order may have been stored:
+        check GET /orders/mine before posting again.
       content:
         application/json:
           schema:

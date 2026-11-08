@@ -163,6 +163,7 @@ func TestCreateMapsStoreErrors(t *testing.T) {
 		{ErrInvalidDescription, http.StatusUnprocessableEntity, "invalid_description"},
 		{ErrNoAccount, http.StatusForbidden, "no_account"},
 		{errors.New("connection refused to 10.0.0.7"), http.StatusInternalServerError, "internal"},
+		{fmt.Errorf("query: %w", context.Canceled), http.StatusInternalServerError, "internal"},
 		{fmt.Errorf("query: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "timeout"},
 	}
 	for _, tc := range cases {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -191,4 +192,82 @@ func TestPageLimitAndTies(t *testing.T) {
 			t.Errorf("created_at not in UTC: %v", list[0].CreatedAt.Location())
 		}
 	}
+}
+
+// Create reads an Order by column name and the list queries scan by position.
+// A field added to Order must reach all three, or one of them leaves it zero.
+func TestCreateAndListsReturnTheSameOrder(t *testing.T) {
+	store, _ := txStore(t)
+	ctx := context.Background()
+	created, err := store.Create(ctx, ana, "plumbing", "The bathroom tap drips all night")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minePage, err := store.Mine(ctx, ana)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, feedPage, err := store.Feed(ctx, carla)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, orders := range map[string][]Order{"Mine(ana)": minePage.Orders, "Feed(carla)": feedPage.Orders} {
+		var got *Order
+		for i := range orders {
+			if orders[i].ID == created.ID {
+				got = &orders[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("%s doesn't return the order Create made", name)
+		}
+		if !reflect.DeepEqual(created, *got) {
+			t.Errorf("%s returned %+v; Create returned %+v", name, *got, created)
+		}
+	}
+}
+
+// has_more is about "more than 50", so 50 exactly is false and 51 is true.
+func TestHasMoreAtTheBoundary(t *testing.T) {
+	store, tx := txStore(t)
+	ctx := context.Background()
+	count := func(query string, args ...any) int {
+		var n int
+		if err := tx.QueryRow(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	insert := func(client uuid.UUID, category string, n int) {
+		t.Helper()
+		if _, err := tx.Exec(ctx,
+			`insert into app.orders (client_id, category, description)
+			 select $1, $2, 'Boundary order number ' || g from generate_series(1, $3::int) g`, client, category, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inFeed := count(`select count(*) from app.orders where status = 'open' and category = 'plumbing'`)
+	inMine := count(`select count(*) from app.orders where client_id = $1`, ana)
+	if inFeed > PageSize || inMine > PageSize {
+		t.Fatalf("the seed already has %d (feed) and %d (mine) orders; want at most %d", inFeed, inMine, PageSize)
+	}
+	// Top each list up to exactly 50 without touching the other: Bruno's
+	// plumbing orders feed Carla's list, Ana's electrical ones only hers.
+	insert(bruno, "plumbing", PageSize-inFeed)
+	insert(ana, "electrical", PageSize-inMine)
+
+	check := func(want bool) {
+		t.Helper()
+		_, feed, err := store.Feed(ctx, carla)
+		if err != nil || len(feed.Orders) != PageSize || feed.HasMore != want {
+			t.Errorf("Feed(carla): %d orders, HasMore %v, %v; want %d and %v", len(feed.Orders), feed.HasMore, err, PageSize, want)
+		}
+		mine, err := store.Mine(ctx, ana)
+		if err != nil || len(mine.Orders) != PageSize || mine.HasMore != want {
+			t.Errorf("Mine(ana): %d orders, HasMore %v, %v; want %d and %v", len(mine.Orders), mine.HasMore, err, PageSize, want)
+		}
+	}
+	check(false) // exactly 50
+	insert(ana, "plumbing", 1)
+	check(true) // 51 in both lists
 }

@@ -42,6 +42,25 @@ func withTimeout(next http.Handler, d time.Duration) http.Handler {
 	})
 }
 
+// loadJWKS fetches the key set at url and keeps it fresh in the background.
+// NewDefaultCtx ignores a failed first fetch (jwkset's default storage sets
+// NoErrorReturnFirstHTTPReq), so it checks that keys really loaded: an API
+// that can't verify any token must not start.
+func loadJWKS(ctx context.Context, url string) (keyfunc.Keyfunc, error) {
+	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{url})
+	if err != nil {
+		return nil, fmt.Errorf("jwks: %w", err)
+	}
+	keys, err := jwks.Storage().KeyReadAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("jwks: no keys from %s: %w", url, err)
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("jwks: no keys at %s", url)
+	}
+	return jwks, nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("api stopped", "err", err)
@@ -74,20 +93,9 @@ func run() error {
 	// The JWKS is fetched now and refreshed in the background, so a key
 	// rotation in Auth reaches the API without a restart.
 	issuer := strings.TrimRight(supabaseURL, "/") + "/auth/v1"
-	jwksURL := issuer + "/.well-known/jwks.json"
-	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
+	jwks, err := loadJWKS(ctx, issuer+"/.well-known/jwks.json")
 	if err != nil {
-		return fmt.Errorf("jwks: %w", err)
-	}
-	// NewDefaultCtx ignores a failed first fetch (jwkset's default storage
-	// sets NoErrorReturnFirstHTTPReq), so check that keys really loaded:
-	// an API that can't verify any token must not start.
-	keys, err := jwks.Storage().KeyReadAll(ctx)
-	if err != nil {
-		return fmt.Errorf("jwks: no keys from %s: %w", jwksURL, err)
-	}
-	if len(keys) == 0 {
-		return fmt.Errorf("jwks: no keys at %s", jwksURL)
+		return err
 	}
 	verifier := auth.NewVerifier(jwks.Keyfunc, issuer)
 
