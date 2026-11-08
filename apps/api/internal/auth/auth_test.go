@@ -1,9 +1,6 @@
 package auth
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
@@ -12,43 +9,14 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-)
 
-const issuer = "http://auth.example.test/auth/v1"
+	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth/authtest"
+)
 
 var ana = uuid.MustParse("11111111-1111-4111-8111-111111111111")
 
-func newKey(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
-}
-
-// validClaims is what Supabase Auth puts in a signed-in user's token.
-func validClaims() jwt.MapClaims {
-	return jwt.MapClaims{
-		"iss":  issuer,
-		"aud":  "authenticated",
-		"sub":  ana.String(),
-		"role": "authenticated",
-		"exp":  time.Now().Add(time.Hour).Unix(),
-	}
-}
-
-func sign(t *testing.T, method jwt.SigningMethod, key any, claims jwt.MapClaims) string {
-	t.Helper()
-	s, err := jwt.NewWithClaims(method, claims).SignedString(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
 func TestMiddleware(t *testing.T) {
-	trusted := newKey(t)
+	trusted := authtest.NewKey(t)
 	pubDER, err := x509.MarshalPKIXPublicKey(&trusted.PublicKey)
 	if err != nil {
 		t.Fatal(err)
@@ -62,10 +30,10 @@ func TestMiddleware(t *testing.T) {
 		}
 		return &trusted.PublicKey, nil
 	}
-	verifier := NewVerifier(naive, issuer)
+	verifier := NewVerifier(naive, authtest.Issuer)
 
 	with := func(change func(jwt.MapClaims)) jwt.MapClaims {
-		c := validClaims()
+		c := authtest.Claims(ana)
 		change(c)
 		return c
 	}
@@ -76,26 +44,26 @@ func TestMiddleware(t *testing.T) {
 		header string
 		want   int
 	}{
-		{"valid token", bearer(sign(t, jwt.SigningMethodES256, trusted, validClaims())), http.StatusOK},
-		{"scheme is case-insensitive", "bearer " + sign(t, jwt.SigningMethodES256, trusted, validClaims()), http.StatusOK},
+		{"valid token", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted, authtest.Claims(ana))), http.StatusOK},
+		{"scheme is case-insensitive", "bearer " + authtest.Sign(t, jwt.SigningMethodES256, trusted, authtest.Claims(ana)), http.StatusOK},
 		{"no header", "", http.StatusUnauthorized},
 		{"not a bearer token", "Basic YW5hOmRlbW8=", http.StatusUnauthorized},
 		{"empty bearer", "Bearer ", http.StatusUnauthorized},
 		{"garbage", bearer("not.a.jwt"), http.StatusUnauthorized},
-		{"expired", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"expired", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Hour).Unix() }))), http.StatusUnauthorized},
-		{"no expiry", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"no expiry", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { delete(c, "exp") }))), http.StatusUnauthorized},
-		{"forged: signed by another key", bearer(sign(t, jwt.SigningMethodES256, newKey(t), validClaims())), http.StatusUnauthorized},
-		{"forged: alg none", bearer(sign(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, validClaims())), http.StatusUnauthorized},
-		{"forged: HS256 keyed with the public key", bearer(sign(t, jwt.SigningMethodHS256, pubDER, validClaims())), http.StatusUnauthorized},
-		{"another issuer", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"forged: signed by another key", bearer(authtest.Sign(t, jwt.SigningMethodES256, authtest.NewKey(t), authtest.Claims(ana))), http.StatusUnauthorized},
+		{"forged: alg none", bearer(authtest.Sign(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, authtest.Claims(ana))), http.StatusUnauthorized},
+		{"forged: HS256 keyed with the public key", bearer(authtest.Sign(t, jwt.SigningMethodHS256, pubDER, authtest.Claims(ana))), http.StatusUnauthorized},
+		{"another issuer", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { c["iss"] = "http://evil.example.test/auth/v1" }))), http.StatusUnauthorized},
-		{"anon audience", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"anon audience", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { c["aud"] = "anon" }))), http.StatusUnauthorized},
-		{"no subject (an API key, not a person)", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"no subject (an API key, not a person)", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { delete(c, "sub") }))), http.StatusUnauthorized},
-		{"subject is not a uuid", bearer(sign(t, jwt.SigningMethodES256, trusted,
+		{"subject is not a uuid", bearer(authtest.Sign(t, jwt.SigningMethodES256, trusted,
 			with(func(c jwt.MapClaims) { c["sub"] = "ana" }))), http.StatusUnauthorized},
 	}
 	for _, tc := range cases {

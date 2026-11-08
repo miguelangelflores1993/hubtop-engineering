@@ -3,6 +3,7 @@
 package orders
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,8 +21,8 @@ import (
 // Store is the data the handlers need; PGStore is the real one.
 type Store interface {
 	Create(ctx context.Context, clientID uuid.UUID, category, description string) (Order, error)
-	Feed(ctx context.Context, accountID uuid.UUID) (*string, []Order, error)
-	Mine(ctx context.Context, clientID uuid.UUID) ([]Order, error)
+	Feed(ctx context.Context, accountID uuid.UUID) (*string, Page, error)
+	Mine(ctx context.Context, clientID uuid.UUID) (Page, error)
 }
 
 type Handler struct{ store Store }
@@ -60,18 +61,27 @@ type createRequest struct {
 const maxBody = 16 << 10 // a 500-character description fits many times over
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
+	// Read the whole body first, so a body over the limit is always a 413,
+	// whatever it holds after the first JSON value.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large")
+		return
+	}
+	if err != nil {
+		// the client went away or the connection broke: not worth an Error
+		slog.InfoContext(r.Context(), "reading request body failed", "err", err)
+	}
 	var in createRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
-	err := dec.Decode(&in)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err == nil {
+		err = dec.Decode(&in)
+	}
 	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
 		err = errors.New("data after the JSON object")
 	}
-	var tooBig *http.MaxBytesError
-	switch {
-	case errors.As(err, &tooBig):
-		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large")
-		return
-	case err != nil:
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
@@ -103,7 +113,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, caller uuid.UUI
 }
 
 func (h *Handler) feed(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
-	category, orders, err := h.store.Feed(r.Context(), caller)
+	category, page, err := h.store.Feed(r.Context(), caller)
 	switch {
 	case errors.Is(err, ErrNoAccount):
 		writeError(w, http.StatusForbidden, "no_account")
@@ -111,17 +121,22 @@ func (h *Handler) feed(w http.ResponseWriter, r *http.Request, caller uuid.UUID)
 		internalError(w, r, err)
 	default:
 		// category null + no orders: the app explains "you have no category"
-		writeJSON(w, http.StatusOK, map[string]any{"category": category, "orders": nonNil(orders)})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"category": category, "orders": nonNil(page.Orders), "has_more": page.HasMore,
+		})
 	}
 }
 
 func (h *Handler) mine(w http.ResponseWriter, r *http.Request, caller uuid.UUID) {
-	orders, err := h.store.Mine(r.Context(), caller)
-	if err != nil {
+	page, err := h.store.Mine(r.Context(), caller)
+	switch {
+	case errors.Is(err, ErrNoAccount):
+		writeError(w, http.StatusForbidden, "no_account")
+	case err != nil:
 		internalError(w, r, err)
-		return
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"orders": nonNil(page.Orders), "has_more": page.HasMore})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"orders": nonNil(orders)})
 }
 
 func nonNil(o []Order) []Order {
@@ -141,8 +156,19 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
-// internalError logs the cause and tells the caller nothing about it.
+// internalError logs the cause and tells the caller nothing about it, except
+// that a query cut by the request's time limit is a 503 timeout.
 func internalError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.Canceled) {
+		// the client disconnected: nobody receives the body below
+		slog.InfoContext(r.Context(), "client canceled request", "method", r.Method, "path", r.URL.Path, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(w, http.StatusServiceUnavailable, "timeout")
+		return
+	}
 	writeError(w, http.StatusInternalServerError, "internal")
 }

@@ -41,6 +41,8 @@ paths:
           $ref: '#/components/responses/Error'
         '500':
           $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
   /orders/feed:
     get:
       operationId: getFeed
@@ -52,7 +54,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [category, orders]
+                required: [category, orders, has_more]
                 properties:
                   category:
                     type: [string, 'null']
@@ -62,11 +64,16 @@ paths:
                     maxItems: 50
                     items:
                       $ref: '#/components/schemas/Order'
+                  has_more:
+                    type: boolean
+                    description: True when more than 50 orders matched and the list was cut. There is no way to page yet.
         '401':
           $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
         '500':
+          $ref: '#/components/responses/Error'
+        '503':
           $ref: '#/components/responses/Error'
   /orders/mine:
     get:
@@ -79,16 +86,23 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [orders]
+                required: [orders, has_more]
                 properties:
                   orders:
                     type: array
                     maxItems: 50
                     items:
                       $ref: '#/components/schemas/Order'
+                  has_more:
+                    type: boolean
+                    description: True when more than 50 orders matched and the list was cut. There is no way to page yet.
         '401':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
         '500':
+          $ref: '#/components/responses/Error'
+        '503':
           $ref: '#/components/responses/Error'
 components:
   securitySchemes:
@@ -136,14 +150,17 @@ components:
         error:
           type: string
           description: A stable code; the message never says why a token was rejected.
-          enum: [unauthorized, invalid_json, body_too_large, invalid_description, unknown_category, no_account, internal]
+          enum: [unauthorized, invalid_json, body_too_large, invalid_description, unknown_category, no_account, internal, timeout]
   responses:
     Error:
       description: |
         400 invalid_json (not one JSON object) · 401 unauthorized (no token,
         expired, forged, wrong issuer or audience) · 403 no_account (signed in
         but no account row) · 413 body_too_large (over 16 KiB) ·
-        422 invalid_description or unknown_category · 500 internal
+        422 invalid_description or unknown_category · 500 internal ·
+        503 timeout (the request's time limit passed). A read is safe to
+        retry. After a 503 on POST /orders the order may have been stored:
+        check GET /orders/mine before posting again.
       content:
         application/json:
           schema:

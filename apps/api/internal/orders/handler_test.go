@@ -3,10 +3,9 @@ package orders
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,9 +16,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth"
+	"github.com/miguelangelflores1993/hubtop-engineering/apps/api/internal/auth/authtest"
 )
-
-const issuer = "http://auth.example.test/auth/v1"
 
 var (
 	ana   = uuid.MustParse("11111111-1111-4111-8111-111111111111")
@@ -34,6 +32,7 @@ type fakeStore struct {
 	gotDesc     string
 	category    *string
 	orders      []Order
+	hasMore     bool
 	err         error
 }
 
@@ -43,16 +42,16 @@ func (f *fakeStore) Create(_ context.Context, client uuid.UUID, category, desc s
 	return Order{ID: uuid.New(), Category: category, Description: desc, Status: "open", CreatedAt: time.Now()}, f.err
 }
 
-func (f *fakeStore) Feed(_ context.Context, id uuid.UUID) (*string, []Order, error) {
+func (f *fakeStore) Feed(_ context.Context, id uuid.UUID) (*string, Page, error) {
 	f.calls++
 	f.gotClient = id
-	return f.category, f.orders, f.err
+	return f.category, Page{Orders: f.orders, HasMore: f.hasMore}, f.err
 }
 
-func (f *fakeStore) Mine(_ context.Context, id uuid.UUID) ([]Order, error) {
+func (f *fakeStore) Mine(_ context.Context, id uuid.UUID) (Page, error) {
 	f.calls++
 	f.gotClient = id
-	return f.orders, f.err
+	return Page{Orders: f.orders, HasMore: f.hasMore}, f.err
 }
 
 type server struct {
@@ -63,25 +62,15 @@ type server struct {
 }
 
 func newServer(t *testing.T, store *fakeStore) *server {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier := auth.NewVerifier(func(*jwt.Token) (any, error) { return &key.PublicKey, nil }, issuer)
+	key := authtest.NewKey(t)
+	verifier := auth.NewVerifier(func(*jwt.Token) (any, error) { return &key.PublicKey, nil }, authtest.Issuer)
 	mux := http.NewServeMux()
 	NewHandler(store).Routes(mux, verifier.Middleware)
 	return &server{t: t, mux: mux, key: key, store: store}
 }
 
 func (s *server) token(sub uuid.UUID) string {
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iss": issuer, "aud": "authenticated", "sub": sub.String(),
-		"exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString(s.key)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return tok
+	return authtest.Sign(s.t, jwt.SigningMethodES256, s.key, authtest.Claims(sub))
 }
 
 // do sends a request as `as` (uuid.Nil: no token) and decodes the JSON reply.
@@ -174,6 +163,8 @@ func TestCreateMapsStoreErrors(t *testing.T) {
 		{ErrInvalidDescription, http.StatusUnprocessableEntity, "invalid_description"},
 		{ErrNoAccount, http.StatusForbidden, "no_account"},
 		{errors.New("connection refused to 10.0.0.7"), http.StatusInternalServerError, "internal"},
+		{fmt.Errorf("query: %w", context.Canceled), http.StatusInternalServerError, "internal"},
+		{fmt.Errorf("query: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "timeout"},
 	}
 	for _, tc := range cases {
 		code, body := newServer(t, &fakeStore{err: tc.err}).do(http.MethodPost, "/orders", ana,
@@ -193,6 +184,11 @@ func TestCreateRejectsBadBodies(t *testing.T) {
 	}{
 		{"truncated JSON", `{"category":`, http.StatusBadRequest, "invalid_json"},
 		{"data after the object", valid + `{"category":"electrical"}`, http.StatusBadRequest, "invalid_json"},
+		{"small trailing value", valid + ` 1`, http.StatusBadRequest, "invalid_json"},
+		{"object then 20 KiB of spaces", valid + strings.Repeat(" ", 20<<10),
+			http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"object then 20 KiB of other data", valid + strings.Repeat(`{"a":1}`, 3<<10),
+			http.StatusRequestEntityTooLarge, "body_too_large"},
 		{"over 16 KiB", `{"category":"plumbing","description":"` + strings.Repeat("a", maxBody) + `"}`,
 			http.StatusRequestEntityTooLarge, "body_too_large"},
 		{"NUL in the category", `{"category":"plumbing\u0000","description":"The kitchen sink is leaking"}`,
@@ -229,6 +225,31 @@ func TestFeed(t *testing.T) {
 		code, body := newServer(t, &fakeStore{err: ErrNoAccount}).do(http.MethodGet, "/orders/feed", ana, "")
 		if code != http.StatusForbidden || body["error"] != "no_account" {
 			t.Fatalf("got %d %v; want 403 no_account", code, body)
+		}
+	})
+	t.Run("has_more is passed through", func(t *testing.T) {
+		for _, more := range []bool{true, false} {
+			_, body := newServer(t, &fakeStore{category: &plumbing, hasMore: more}).do(http.MethodGet, "/orders/feed", ana, "")
+			if body["has_more"] != more {
+				t.Errorf("has_more = %v, want %v (%v)", body["has_more"], more, body)
+			}
+		}
+	})
+}
+
+func TestMine(t *testing.T) {
+	t.Run("no account", func(t *testing.T) {
+		code, body := newServer(t, &fakeStore{err: ErrNoAccount}).do(http.MethodGet, "/orders/mine", ana, "")
+		if code != http.StatusForbidden || body["error"] != "no_account" || len(body) != 1 {
+			t.Fatalf("got %d %v; want 403 no_account", code, body)
+		}
+	})
+	t.Run("has_more is passed through", func(t *testing.T) {
+		for _, more := range []bool{true, false} {
+			_, body := newServer(t, &fakeStore{hasMore: more}).do(http.MethodGet, "/orders/mine", ana, "")
+			if body["has_more"] != more {
+				t.Errorf("has_more = %v, want %v (%v)", body["has_more"], more, body)
+			}
 		}
 	})
 }
