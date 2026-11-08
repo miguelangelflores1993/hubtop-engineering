@@ -76,7 +76,7 @@ jobs:
         with:
           go-version-file: apps/api/go.mod
           cache-dependency-path: apps/api/go.sum
-      - run: go vet ./...
+      - run: go vet -tags integration ./...
       - run: go test -race -count=1 ./...
 
   flutter:
@@ -118,3 +118,17 @@ jobs:
         run: supabase db lint --level warning --fail-on error
       - name: SQL tests (pgTAP)
         run: supabase test db
+      # The API's SQL is its authorization (it runs as a role that bypasses
+      # RLS), so its store tests run here, against the real schema and seed.
+      - uses: actions/setup-go@v5
+        if: hashFiles('apps/api/go.mod') != ''
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - name: API store tests (real database)
+        if: hashFiles('apps/api/go.mod') != ''
+        working-directory: apps/api
+        run: |
+          TEST_DATABASE_URL=$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"')
+          export TEST_DATABASE_URL
+          go test -tags integration -count=1 ./internal/orders/
